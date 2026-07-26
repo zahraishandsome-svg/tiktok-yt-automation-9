@@ -6,7 +6,7 @@
 channels:
   - id: channel_9
     tiktok_username: "pati1902"
-    youtube_channel_name: "pati1902"
+    youtube_channel_name: "Pati"
     # No fixed_title — the TikTok caption is used as the YouTube title.
     google_credentials_file: "credentials/channel_9_client_secret.json"
     oauth_token_file: "tokens/channel_9_token.json"
@@ -26,8 +26,8 @@ channels:
     max_download_candidates: 20
     # Caption dedup: before uploading, skip any TikTok whose caption already exists
     # among ALL videos on the YouTube channel (catches manual uploads).
-    # Filled in after OAuth — value is "UU" + the YouTube channel ID.
-    youtube_uploads_playlist: ""
+    # 2 videos were uploaded manually (the two most-viewed TikToks) — dedup skips them.
+    youtube_uploads_playlist: "UU3w37lLqcUThOqCkSZ32cNw"
     slot_publish_times_utc:
       1: "15:00"   # PUBLIC at 8 PM PKT (UTC+5) — USA audience
       2: "17:00"   # PUBLIC at 10 PM PKT (UTC+5) — USA audience
