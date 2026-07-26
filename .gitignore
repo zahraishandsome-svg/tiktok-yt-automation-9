@@ -1,0 +1,18 @@
+
+# Never commit live OAuth secrets (CI materializes them from GitHub secrets)
+tokens/*.json
+credentials/*.json
+
+# Runtime files
+.env
+*.db
+__pycache__/
+*.pyc
+*.pyo
+downloads/*
+!downloads/.gitkeep
+logs/*.log
+
+# Local-only files (machine-specific, run_local.bat contains a token)
+run_local.bat
+staging/

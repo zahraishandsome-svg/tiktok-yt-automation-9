@@ -1,0 +1,67 @@
+﻿name: Stage download (hybrid) - Channel 7
+
+on:
+  workflow_dispatch:
+    inputs:
+      slot:
+        description: "Slot to stage (1 or 2)"
+        required: true
+        default: "1"
+
+concurrency:
+  group: stage-channel_9
+  cancel-in-progress: false
+
+env:
+  DB_PAGE_ID: channel_9
+
+jobs:
+  stage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install ffmpeg
+        run: |
+          set +e
+          sudo apt-get install -y --no-install-recommends --fix-missing ffmpeg 2>/dev/null
+          ffmpeg -version >/dev/null 2>&1 && echo "ffmpeg ok" || echo "::warning::ffmpeg missing"
+          exit 0
+
+      # NOTE: no DB cache here on purpose. The committed data/channel_9.db from
+      # checkout is the single source of truth (the local PC pushes it after every
+      # upload). A cache restore here would clobber it with a stale copy and make
+      # slot 2 re-pick slot 1's video â†’ duplicate uploads. Always use the repo DB.
+
+      - name: Write TikTok cookies
+        run: |
+          if [ -n "${{ secrets.TIKTOK_COOKIES }}" ]; then
+            echo "${{ secrets.TIKTOK_COOKIES }}" | base64 -d > /tmp/tiktok_cookies.txt
+            echo "TIKTOK_COOKIES_FILE=/tmp/tiktok_cookies.txt" >> $GITHUB_ENV
+          fi
+
+      - name: Stage the next video for this slot
+        run: python stage_download.py --slot ${{ github.event.inputs.slot }} --channel channel_9
+
+      - name: Upload staged artifact
+        if: hashFiles('staging/slot*.json') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: staged-slot${{ github.event.inputs.slot }}
+          path: staging/
+          retention-days: 2
+          overwrite: true
