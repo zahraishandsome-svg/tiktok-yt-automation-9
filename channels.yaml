@@ -7,6 +7,8 @@ channels:
   - id: channel_9
     tiktok_username: "pati1902"
     youtube_channel_name: "Pati"
+    # The Google account that owns this YouTube channel (owns hazel-media-tools).
+    owner_email: "seamonshazel@gmail.com"
     # No fixed_title — the TikTok caption is used as the YouTube title.
     google_credentials_file: "credentials/channel_9_client_secret.json"
     oauth_token_file: "tokens/channel_9_token.json"
