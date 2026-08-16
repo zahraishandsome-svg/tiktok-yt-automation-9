@@ -68,6 +68,8 @@ _AUDIO_SAFE_FORMAT = (
 
 
 _FETCH_RETRIES = 3
+_DOWNLOAD_ATTEMPTS = 3       # per video — TikTok rejects requests at random
+_DOWNLOAD_RETRY_WAIT = 4     # seconds, grows with each attempt
 _FETCH_RETRY_BASE_WAIT = 2   # seconds, doubles each attempt
 _PROFILE_BATCH = 150         # default fetch limit — covers a whole profile, so the
                              # unbounded fallback (which TikTok blocks on CI runners)
@@ -107,7 +109,17 @@ def get_profile_videos(tiktok_username: str,
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=False)
-            break   # success — exit retry loop
+            if info and info.get("entries"):
+                break   # success — exit retry loop
+            # ignoreerrors=True turns TikTok's random rejections into an empty result
+            # rather than an exception; treat it as a failed attempt, not an empty profile
+            if attempt < _FETCH_RETRIES:
+                wait = _FETCH_RETRY_BASE_WAIT ** attempt
+                logger.warning("TikTok returned no entries for @%s (attempt %d/%d) — "
+                               "retrying in %ds", tiktok_username, attempt, _FETCH_RETRIES, wait)
+                time.sleep(wait)
+                continue
+            break
         except Exception as exc:
             # Safety net: if impersonation itself is the problem, disable it and
             # retry immediately — impersonation must never be the cause of a miss.
@@ -240,7 +252,12 @@ def download_video(video_url: str, video_id: str, output_dir: Path) -> Optional[
     _inject_impersonate(ydl_opts)
 
     logger.info("Downloading TikTok video %s", video_id)
-    for impersonate_attempt in (True, False):
+    # TikTok rejects a share of requests at random since 2026-08-14 — the same video
+    # fails once and extracts fine seconds later — so one shot per video threw away
+    # videos that were perfectly downloadable. Try a few times before giving up; the
+    # impersonation fallback is folded into the same loop.
+    last_exc = None
+    for attempt in range(1, _DOWNLOAD_ATTEMPTS + 1):
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(video_url, download=True)
@@ -249,16 +266,25 @@ def download_video(video_url: str, video_id: str, output_dir: Path) -> Optional[
                     return None
             break
         except yt_dlp.utils.DownloadError as exc:
-            # If impersonation broke the download, drop it and try once more.
-            if (impersonate_attempt and _is_impersonate_error(exc)
-                    and ydl_opts.pop("impersonate", None) is not None):
+            last_exc = exc
+            if _is_impersonate_error(exc) and ydl_opts.pop("impersonate", None) is not None:
                 logger.warning("Impersonation failed for %s — retrying without it", video_id)
+                continue
+            if attempt < _DOWNLOAD_ATTEMPTS and "Unexpected response" in str(exc):
+                wait = _DOWNLOAD_RETRY_WAIT * attempt
+                logger.warning("TikTok rejected %s (attempt %d/%d) — retrying in %ds",
+                               video_id, attempt, _DOWNLOAD_ATTEMPTS, wait)
+                time.sleep(wait)
                 continue
             logger.error("Download failed for %s: %s", video_id, exc)
             return None
         except Exception as exc:
             logger.error("Unexpected error downloading %s: %s", video_id, exc)
             return None
+    else:
+        logger.error("Download failed for %s after %d attempts: %s",
+                     video_id, _DOWNLOAD_ATTEMPTS, last_exc)
+        return None
 
     # Locate the output file (ext could be mp4 or webm)
     for ext in ("mp4", "webm", "mkv"):
@@ -328,6 +354,11 @@ def _inject_cookies(ydl_opts: dict) -> None:
     if cookies_file and Path(cookies_file).exists():
         ydl_opts["cookiefile"] = cookies_file
         logger.debug("Using TikTok cookies from %s", cookies_file)
+    # Since 2026-08-14 TikTok answers requests with no Referer with a bot-challenge
+    # page, and yt-dlp fails with "Unexpected response from webpage request" on every
+    # video (yt-dlp issue #17403). A Referer is what the fix in PR #17437 adds; sending
+    # it here restores extraction on the stable release we already run.
+    ydl_opts.setdefault("http_headers", {})["Referer"] = "https://www.tiktok.com/"
 
 
 # Module-level cache for the resolved impersonate target.
