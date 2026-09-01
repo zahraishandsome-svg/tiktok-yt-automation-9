@@ -1,7 +1,7 @@
 ﻿"""
 Loops through all enabled channels and runs channel_runner for each.
 Error isolation: if one channel fails, the others still run.
-Aggregates results and triggers Discord notification on any failure.
+Aggregates results.
 """
 
 import logging
@@ -9,7 +9,6 @@ from typing import Dict, Any, List, Optional
 
 from .config import get_enabled_channels
 from .channel_runner import run_channel
-from .notifier import send_failure_alert
 
 logger = logging.getLogger(__name__)
 
@@ -71,12 +70,6 @@ def run_all_channels(
             }
             results.append(result)
             failures.append(result)
-
-    # Notifications
-    webhook_url = config.get("discord_webhook_url", "")
-    if webhook_url:
-        if failures:
-            None  # instant failure alerts disabled; failures appear in the daily summary
 
     _log_summary(results)
     return results
