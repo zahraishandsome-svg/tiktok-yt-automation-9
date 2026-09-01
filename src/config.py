@@ -36,7 +36,6 @@ def load_config() -> Dict[str, Any]:
 
     return {
         "channels": validated,
-        "discord_webhook_url": os.getenv("DISCORD_WEBHOOK_URL", ""),
         "dry_run": os.getenv("DRY_RUN", "false").lower() == "true",
         "log_level": os.getenv("LOG_LEVEL", "INFO"),
         "project_root": PROJECT_ROOT,
