@@ -64,26 +64,19 @@ def main() -> None:
         help="Run full pipeline but skip the actual YouTube upload.",
     )
     parser.add_argument(
-        "--summary-only", action="store_true",
-        help="Skip uploads — just send the Discord daily summary and exit.",
-    )
-    parser.add_argument(
         "--log-level", type=str, default="INFO",
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
     )
     args = parser.parse_args()
 
-    if not args.summary_only and args.slot is None:
-        parser.error("--slot is required unless --summary-only is set")
+    if args.slot is None:
+        parser.error("--slot is required")
 
     log_file = setup_logging(args.log_level)
     logger = logging.getLogger("run")
 
     logger.info("=" * 60)
-    if args.summary_only:
-        logger.info("TikTok→YouTube Automation | Summary Only")
-    else:
-        logger.info("TikTok→YouTube Automation | Slot %d | dry_run=%s", args.slot, args.dry_run)
+    logger.info("TikTok→YouTube Automation | Slot %d | dry_run=%s", args.slot, args.dry_run)
     logger.info("=" * 60)
 
     init_db()
@@ -98,26 +91,6 @@ def main() -> None:
     effective_dry_run = args.dry_run or config.get("dry_run", False)
     if effective_dry_run and not args.dry_run:
         logger.info("DRY_RUN=true in .env — no uploads will happen")
-
-    # --summary-only: just send the Discord daily summary and exit
-    if args.summary_only:
-        from src.db import get_todays_run_summary
-        from src.notifier import send_daily_summary
-        webhook_url = config.get("discord_webhook_url", "")
-        if not webhook_url:
-            logger.error("No DISCORD_WEBHOOK_URL configured — cannot send summary")
-            sys.exit(1)
-        channel_names = {
-            ch["id"]: ch.get("youtube_channel_name", "")
-            for ch in config.get("channels", [])
-        }
-        send_daily_summary(
-            webhook_url=webhook_url,
-            db_rows=get_todays_run_summary(),
-            channel_names=channel_names,
-        )
-        logger.info("Daily summary sent. Log saved to: %s", log_file)
-        sys.exit(0)
 
     results = run_all_channels(
         config=config,
