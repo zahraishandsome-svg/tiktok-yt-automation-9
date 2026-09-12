@@ -533,6 +533,19 @@ def get_todays_run_summary() -> List[Dict]:
     return all_rows
 
 
+def get_any_uploaded_youtube_id(channel_id: str) -> Optional[str]:
+    """One YouTube video id from this channel, used to find the channel itself."""
+    conn = get_connection()
+    row = conn.execute("""
+        SELECT youtube_video_id FROM posted_videos
+        WHERE channel_id = ? AND status = 'uploaded'
+          AND youtube_video_id IS NOT NULL AND youtube_video_id != 'already_on_yt'
+        ORDER BY posted_at DESC LIMIT 1
+    """, (channel_id,)).fetchone()
+    conn.close()
+    return row["youtube_video_id"] if row else None
+
+
 def get_longformed_video_ids(channel_id: str) -> set:
     """
     Returns video IDs already uploaded as longform for this channel.

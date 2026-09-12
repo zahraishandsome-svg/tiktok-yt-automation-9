@@ -32,6 +32,7 @@ from .tiktok_downloader import (
     is_short_video, cleanup_download, cleanup_stale_downloads, _PROFILE_BATCH,
 )
 from .youtube_uploader import get_authenticated_client, upload_video
+from . import youtube_channel_index as yt_index
 from .video_converter import (convert_to_4_3_blurred, trim_video, is_ffmpeg_available,
                               is_vertical as _file_is_vertical, get_video_duration)
 
@@ -175,6 +176,9 @@ def run_channel(channel: Dict[str, Any], slot: int, dry_run: bool = False) -> Di
                         return result
             else:
                 video = _pick_next_video(channel, slot, upload_mode, exclude_ids=tried_ids)
+                # The database only knows what this automation uploaded; ask the
+                # channel too, or a clip that arrived some other way goes up twice.
+                video = _skip_if_already_on_channel(channel, video, tried_ids)
                 if video is None:
                     if tried_ids:
                         # Ran out of fresh candidates after download failures. The
@@ -753,6 +757,54 @@ def _resolve_longform_title(channel: Dict[str, Any], video: Dict[str, Any]) -> s
 
 
 # ── Video selection ───────────────────────────────────────────────────────────
+
+def _skip_if_already_on_channel(channel: Dict[str, Any],
+                                video: Optional[Dict[str, Any]],
+                                tried_ids: set) -> Optional[Dict[str, Any]]:
+    """Drop a pick whose title is already on the YouTube channel.
+
+    The database only records what this automation uploaded. A channel that was
+    filled by hand, or by an earlier tool, or before its database was reset,
+    holds videos no rule here can see — and their TikTok sources look new. That
+    is how the same clip ended up in the Shorts tab twice.
+
+    Returns the video to upload, or None when there is nothing left to try.
+    The caller's loop then picks again with this one excluded.
+    """
+    if video is None:
+        return None
+
+    channel_id = channel["id"]
+    known = None
+    try:
+        # The cache remembers which YouTube channel this is, so the extra lookup
+        # only happens the first time or after the cache is deleted.
+        known = yt_index.load_index(channel_id, None)
+        if known is None:
+            latest = db.get_any_uploaded_youtube_id(channel_id)
+            yt_channel = yt_index.resolve_youtube_channel(latest) if latest else None
+            known = yt_index.load_index(channel_id, yt_channel)
+    except Exception as exc:                       # never block a run on this
+        logger.warning("[%s] channel check unavailable (%s) — relying on the database",
+                       channel_id, exc)
+        return video
+
+    if known is None:
+        logger.warning("[%s] could not read the channel listing — relying on the database",
+                       channel_id)
+        return video
+
+    title = _resolve_title(channel, video)
+    if yt_index.normalise(title) not in known:
+        return video
+
+    logger.info("[%s] %s is already on the channel under this title — skipping it",
+                channel_id, video["id"])
+    db.mark_skipped(channel_id, video,
+                    "already on the YouTube channel under the same title")
+    tried_ids.add(video["id"])
+    return None
+
 
 def _pick_next_video(channel: Dict[str, Any], slot: int,
                      upload_mode: str = "short_only",
