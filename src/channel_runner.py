@@ -817,7 +817,9 @@ def _pick_next_video(channel: Dict[str, Any], slot: int,
     if not raw_batch:
         return None
 
-    already_posted = db.get_posted_video_ids(channel_id, upload_mode=upload_mode)
+    already_posted = db.get_posted_video_ids(
+        channel_id, upload_mode=upload_mode,
+        allow_repost_other_format=channel.get("allow_repost_other_format", False))
 
     def _filter(vids):
         if min_ts is not None:
@@ -901,7 +903,9 @@ def _pick_most_popular(channel: Dict[str, Any],
     sources = [secondary, primary] if secondary else [primary]
 
     min_ts = _parse_min_upload_date(channel.get("min_upload_date"))
-    already_posted = db.get_posted_video_ids(channel_id, upload_mode="popular_split")
+    already_posted = db.get_posted_video_ids(
+        channel_id, upload_mode="popular_split",
+        allow_repost_other_format=channel.get("allow_repost_other_format", False))
 
     for i, tiktok_user in enumerate(sources):
         # Prefer the bounded fetch: TikTok blocks unbounded pagination from CI
@@ -952,7 +956,9 @@ def _pick_tiered_split_longform(channel: Dict[str, Any],
       - Is at least `longform_min_age_days` old (default 15) — avoids very recent content
         already handled by slot 1 as Shorts.
       - Has NOT already been uploaded as longform for this channel.
-      - MAY have been uploaded as a Short already (intentional — this creates the long
+      - Has NOT been uploaded in ANY format (set allow_repost_other_format: true
+        on the channel to allow re-posting old Shorts as longform, which is how
+        85 duplicates were created — this creates the long
         version of videos the channel previously posted as Shorts).
 
     Fetches the FULL TikTok profile every time (required to surface older videos).
@@ -992,7 +998,13 @@ def _pick_tiered_split_longform(channel: Dict[str, Any],
         )
 
     # Get video IDs already uploaded as longform (the only exclusion for slot 2).
-    already_longformed = db.get_longformed_video_ids(channel_id)
+    # Any format counts: a video that already went out as a Short must not come
+    # back as a longform. Re-posting old Shorts as longform was intentional once
+    # and produced 85 duplicates on this channel; it is now opt-in per channel.
+    if channel.get("allow_repost_other_format", False):
+        already_longformed = db.get_longformed_video_ids(channel_id)
+    else:
+        already_longformed = db.get_posted_video_ids(channel_id, upload_mode="tiered_split")
 
     # Filter: must be old enough + not already longformed + not already tried this run.
     eligible = [
