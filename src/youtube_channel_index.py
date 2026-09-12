@@ -16,6 +16,7 @@ import json
 import logging
 import re
 import subprocess
+import sys
 import time
 import unicodedata
 from pathlib import Path
@@ -36,16 +37,21 @@ def normalise(title: str) -> str:
 
 
 def _run_ytdlp(url: str, template: str) -> list:
-    try:
-        out = subprocess.run(
-            ["yt-dlp", "--flat-playlist", "--no-warnings", "--ignore-errors",
-             "--print", template, url],
-            capture_output=True, text=True, encoding="utf-8", errors="replace",
-            timeout=FETCH_TIMEOUT_S)
-    except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
-        logger.warning("yt-dlp failed for %s: %s", url, exc)
-        return []
-    return [line for line in (out.stdout or "").splitlines() if line.strip()]
+    """yt-dlp is a pip dependency, so run it as a module — the console script is
+    not guaranteed to be on PATH inside a CI runner."""
+    args = ["--flat-playlist", "--no-warnings", "--ignore-errors", "--print", template, url]
+    for cmd in ([sys.executable, "-m", "yt_dlp"], ["yt-dlp"]):
+        try:
+            out = subprocess.run(cmd + args, capture_output=True, text=True,
+                                 encoding="utf-8", errors="replace",
+                                 timeout=FETCH_TIMEOUT_S)
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
+            logger.warning("yt-dlp failed for %s: %s", url, exc)
+            continue
+        lines = [line for line in (out.stdout or "").splitlines() if line.strip()]
+        if lines:
+            return lines
+    return []
 
 
 def _cache_file(channel_id: str) -> Path:
