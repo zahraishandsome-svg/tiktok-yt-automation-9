@@ -1,0 +1,73 @@
+name: AI thumbnails - backfill / single video (Channel 9)
+
+on:
+  workflow_dispatch:
+    inputs:
+      count:
+        description: "Latest N long videos (skips ones that already have an AI thumbnail)"
+        required: false
+        default: "0"
+      video:
+        description: "Or one YouTube video id (re-made even if it already has one)"
+        required: false
+        default: ""
+
+concurrency:
+  group: upload-channel_9
+  cancel-in-progress: false
+
+env:
+  DB_PAGE_ID: channel_9
+
+jobs:
+  thumbnails:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+      - run: pip install -r requirements.txt
+      - name: ffmpeg
+        run: sudo apt-get install -y --no-install-recommends ffmpeg >/dev/null 2>&1 || true; ffmpeg -version | head -1
+      - name: Restore credentials & tokens
+        run: |
+          mkdir -p credentials tokens
+          echo "${{ secrets.CHANNEL_9_CLIENT_SECRET }}" | base64 -d > credentials/channel_9_client_secret.json
+          echo "${{ secrets.CHANNEL_9_TOKEN }}" | base64 -d > tokens/channel_9_token.json
+      - name: TikTok cookies
+        run: |
+          if [ -n "${{ secrets.TIKTOK_COOKIES }}" ]; then
+            echo "${{ secrets.TIKTOK_COOKIES }}" | base64 -d > /tmp/tiktok_cookies.txt
+            echo "TIKTOK_COOKIES_FILE=/tmp/tiktok_cookies.txt" >> $GITHUB_ENV
+          fi
+      - name: Make and set thumbnails
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          VERTEX_API_KEY: ${{ secrets.VERTEX_API_KEY }}
+          VERTEX_PROJECT: ${{ secrets.VERTEX_PROJECT }}
+        run: |
+          mkdir -p fonts
+          curl -fsSL --retry 3 --max-time 120 -o fonts/NotoSansJP.ttf "https://github.com/google/fonts/raw/main/ofl/notosansjp/NotoSansJP%5Bwght%5D.ttf"
+          ARGS="--channel channel_9 --lang German"
+          if [ -n "${{ github.event.inputs.video }}" ]; then ARGS="$ARGS --video ${{ github.event.inputs.video }}";
+          elif [ "${{ github.event.inputs.count }}" != "0" ]; then ARGS="$ARGS --backfill ${{ github.event.inputs.count }}"; fi
+          python thumbnails.py $ARGS
+      - name: Commit DB (thumbnails table)
+        if: always()
+        run: |
+          python -c "import sqlite3; c=sqlite3.connect('data/channel_9.db'); c.execute('PRAGMA wal_checkpoint(TRUNCATE)'); c.close()"
+          cp data/channel_9.db /tmp/db_new.db
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          for i in 1 2 3; do
+            git fetch origin main && git checkout -q -B main origin/main
+            cp /tmp/db_new.db data/channel_9.db
+            git add -f data/channel_9.db
+            git diff --staged --quiet && break
+            git commit -qm "chore: thumbnails table [skip ci]" && git push origin main && break
+          done

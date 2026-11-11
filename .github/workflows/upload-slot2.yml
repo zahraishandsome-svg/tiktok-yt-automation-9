@@ -1,4 +1,4 @@
-﻿name: Upload Slot 2 - Channel 7 (10 PM PKT)
+name: Upload Slot 2 - Channel 7 (10 PM PKT)
 
 on:
   workflow_dispatch:
@@ -121,6 +121,9 @@ jobs:
           fi
 
       - name: Run Slot 2
+        env:
+          # Claude writes the title + description of long uploads (ai_longform_metadata)
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
           CHANNEL_ARG="--channel channel_9"
           if [ -n "${{ github.event.inputs.channel }}" ]; then
@@ -137,6 +140,21 @@ jobs:
           YT_CHANNEL_ID: UC3w37lLqcUThOqCkSZ32cNw
           DB_PAGE_ID: channel_9
         run: python repost.py --slot 2 --channel channel_9
+
+      - name: AI thumbnail for new long videos
+        # Only acts on long-form uploads (Shorts are skipped). Claude plans, Vertex (Gemini)
+        # draws, we add the text; then thumbnails.set. Never fails the upload job.
+        if: always()
+        continue-on-error: true
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          VERTEX_API_KEY: ${{ secrets.VERTEX_API_KEY }}
+          VERTEX_PROJECT: ${{ secrets.VERTEX_PROJECT }}
+          DB_PAGE_ID: channel_9
+        run: |
+          mkdir -p fonts
+          curl -fsSL --retry 3 --max-time 120 -o fonts/NotoSansJP.ttf "https://github.com/google/fonts/raw/main/ofl/notosansjp/NotoSansJP%5Bwght%5D.ttf"
+          python thumbnails.py --channel channel_9 --lang German
 
       - name: Save DB cache
         if: always()

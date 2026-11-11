@@ -405,10 +405,10 @@ def _run_longform_only(channel, video, slot, run_id, dry_run, result):
         upload_file = converted_file
 
     # Longform uploads are NEVER Shorts (they are horizontal 4:3)
-    title = _resolve_longform_title(channel, video)
+    title, ai_desc = _longform_metadata(channel, video, local_file, dry_run)
     youtube_id = _upload_video(
         channel, video, upload_file, is_short=False, slot=slot, dry_run=dry_run,
-        title_override=title,
+        title_override=title, description_override=ai_desc,
     )
 
     # Clean up both files
@@ -530,10 +530,10 @@ def _run_dual(channel, video, slot, run_id, dry_run, result):
 
         if converted_file is not None or not vertical or dry_run:
             # Horizontal videos: upload original file directly (no conversion)
-            longform_title = _resolve_longform_title(channel, video)
+            longform_title, ai_desc = _longform_metadata(channel, video, local_file, dry_run)
             longform_yt_id = _upload_video(
                 channel, video, upload_file, is_short=False, slot=slot, dry_run=dry_run,
-                title_override=longform_title,
+                title_override=longform_title, description_override=ai_desc,
             )
             if longform_yt_id:
                 if not dry_run:
@@ -592,7 +592,9 @@ def _run_trim_dual(channel, video, slot, run_id, dry_run, result):
             result["error"] = "Download failed"
             return
 
-        youtube_id = _upload_video(channel, video, local_file, is_short=False, slot=slot, dry_run=dry_run)
+        lf_title, ai_desc = _longform_metadata(channel, video, local_file, dry_run)
+        youtube_id = _upload_video(channel, video, local_file, is_short=False, slot=slot, dry_run=dry_run,
+                                   title_override=lf_title, description_override=ai_desc)
         cleanup_download(local_file)
 
         if youtube_id:
@@ -635,7 +637,9 @@ def _run_trim_dual(channel, video, slot, run_id, dry_run, result):
                 result["error"] = "Download failed"
                 return
 
-            lf_youtube_id = _upload_video(channel, video, local_file, is_short=False, slot=1, dry_run=dry_run)
+            lf_title, ai_desc = _longform_metadata(channel, video, local_file, dry_run)
+            lf_youtube_id = _upload_video(channel, video, local_file, is_short=False, slot=1, dry_run=dry_run,
+                                          title_override=lf_title, description_override=ai_desc)
             if not lf_youtube_id:
                 _handle_upload_failure(channel, video, "Longform upload failed", format_type="longform")
                 db.finish_run(run_id, "failed", error_message="Longform upload failed")
@@ -754,6 +758,22 @@ def _resolve_longform_title(channel: Dict[str, Any], video: Dict[str, Any]) -> s
         max_base = 100 - len(suffix) - 1
         return f"{base[:max_base].rstrip()} {suffix}"
     return base
+
+
+def _longform_metadata(channel: Dict[str, Any], video: Dict[str, Any], source_file: Path,
+                       dry_run: bool):
+    """(title, description) for a long-form upload. Channels with ai_longform_metadata set
+    get a Claude-written title + description; on any failure the caption title is kept."""
+    title = _resolve_longform_title(channel, video)
+    lang = channel.get("ai_longform_metadata")
+    if not lang or dry_run:
+        return title, None
+    from . import ai_metadata
+    meta = ai_metadata.write(source_file, video.get("title") or "", lang, channel["id"],
+                             video["id"], db._get_db_path())
+    if not meta:
+        return title, None
+    return meta["title"], meta["description"]
 
 
 # ── Video selection ───────────────────────────────────────────────────────────
@@ -1159,7 +1179,8 @@ def _resolve_title(channel: Dict[str, Any], video: Dict[str, Any]) -> str:
 
 def _upload_video(channel: Dict[str, Any], video: Dict[str, Any],
                   local_file: Path, is_short: bool, slot: int,
-                  dry_run: bool, title_override: Optional[str] = None) -> Optional[str]:
+                  dry_run: bool, title_override: Optional[str] = None,
+                  description_override: Optional[str] = None) -> Optional[str]:
     youtube = get_authenticated_client(
         credentials_file=channel["google_credentials_file"],
         token_file=channel["oauth_token_file"],
@@ -1168,7 +1189,7 @@ def _upload_video(channel: Dict[str, Any], video: Dict[str, Any],
         youtube_client=youtube,
         video_path=local_file,
         title=title_override or _resolve_title(channel, video),
-        description=video.get("description") or "",
+        description=description_override or video.get("description") or "",
         tags=list(channel.get("default_tags") or []),
         category_id=str(channel.get("youtube_category_id", "22")),
         is_short=is_short,
