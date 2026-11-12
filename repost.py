@@ -29,6 +29,7 @@ import logging
 import os
 import sqlite3
 import sys
+import unicodedata
 import urllib.parse
 import urllib.request
 from datetime import date, datetime, timedelta, timezone
@@ -168,8 +169,72 @@ def _source_url(con, channel: dict, yt_id: str):
     return None, None
 
 
-def _download(con, channel: dict, yt_id: str, out: Path):
+_TT_INDEX = None
+LAST_SOURCE = (None, None)
+
+
+def _norm(s):
+    s = unicodedata.normalize("NFKC", s or "").replace("‹", "<").replace("›", ">")
+    return " ".join(s.split()).lower()
+
+
+def _tiktok_index(channel: dict) -> list:
+    """(normalised caption, tiktok id, url) for every clip on the channel's TikTok account(s)."""
+    global _TT_INDEX
+    if _TT_INDEX is None:
+        _TT_INDEX = []
+        from src.tiktok_downloader import get_profile_videos
+        for u in dict.fromkeys([channel.get("tiktok_username"), channel.get("tiktok_username_slot2")]):
+            if not u:
+                continue
+            try:
+                vids = get_profile_videos(u, end=None) or []
+            except Exception as exc:  # noqa: BLE001
+                log.warning("TikTok listing failed for @%s: %s", u, exc)
+                vids = []
+            for v in vids:
+                cap = _norm(v.get("title") or v.get("description"))
+                if cap and v.get("id"):
+                    _TT_INDEX.append((cap, v["id"], v.get("url") or f"https://www.tiktok.com/@{u}/video/{v['id']}"))
+        log.info("TikTok index: %d clips to match old uploads against", len(_TT_INDEX))
+    return _TT_INDEX
+
+
+def _match_tiktok(channel: dict, video: dict):
+    """Old uploads that are not in our DB: find the TikTok original by its caption (our upload's
+    title/description is the TikTok caption). Only a single, unambiguous match is used."""
+    idx = _tiktok_index(channel)
+    for text in (video.get("title"), video.get("description")):
+        t = _norm(text)
+        if len(t) < 6:
+            continue
+        prefix = t[:-1].rstrip() if t.endswith("…") else None   # title cut at 100 chars
+        hits = {(i, u) for cap, i, u in idx if cap == t or (prefix and len(prefix) >= 20 and cap.startswith(prefix))}
+        if len(hits) == 1:
+            tid, url = next(iter(hits))
+            return url, tid
+    return None, None
+
+
+def _download(con, channel: dict, video: dict, out: Path):
+    # Always the original TikTok first (owner rule); YouTube only as the last fallback -
+    # GitHub's servers usually get YouTube's "not a bot" block.
+    global LAST_SOURCE
+    yt_id = video["id"]
+    from src import catalog
+    catalog.ensure(con)
+    parts = con.execute("SELECT tiktok_video_id, tiktok_url FROM video_catalog WHERE youtube_video_id=? "
+                        "ORDER BY part_no", (yt_id,)).fetchall()
+    if len(parts) > 1:
+        log.info("%s is a merged video (%d clips) - not reposted", yt_id, len(parts))
+        return None
     url, tid = _source_url(con, channel, yt_id)
+    if not url and parts and parts[0][0] and not str(parts[0][0]).startswith("repost:"):
+        tid = parts[0][0]
+        url = parts[0][1] or f"https://www.tiktok.com/@{channel['tiktok_username']}/video/{tid}"
+    if not url:
+        url, tid = _match_tiktok(channel, video)
+    LAST_SOURCE = (tid, url)
     if url:
         try:
             from src.tiktok_downloader import download_video
@@ -279,7 +344,7 @@ def main() -> int:
         if dry:
             log.info("[DRY RUN] would repost %s", video["id"])
             return 0
-        path = _download(con, channel, video["id"], out)
+        path = _download(con, channel, video, out)
         if not path:
             continue
         try:
@@ -303,6 +368,16 @@ def main() -> int:
             con.execute("INSERT INTO runs (channel_id, run_date, slot, status, videos_uploaded, error_message,"
                         " started_at, completed_at) VALUES (?,?,?,'success',1,?,?,?)",
                         (a.channel, today.isoformat(), a.slot, f"repost of {video['id']}", now, now))
+        # the catalog row of the repost = the parts of its source video
+        with con:
+            if con.execute("SELECT 1 FROM video_catalog WHERE youtube_video_id=?", (video["id"],)).fetchone():
+                con.execute("INSERT OR REPLACE INTO video_catalog SELECT ?, part_no, channel_id, 'repost', youtube_title, "
+                            "tiktok_video_id, tiktok_caption, tiktok_url, seconds, ? FROM video_catalog "
+                            "WHERE youtube_video_id=?", (new_id, now, video["id"]))
+            else:
+                con.execute("INSERT OR REPLACE INTO video_catalog VALUES (?,?,?,?,?,?,?,?,?,?)",
+                            (new_id, 1, a.channel, "repost", video["title"], LAST_SOURCE[0], video["title"],
+                             LAST_SOURCE[1], None, now))
         log.info("REPOSTED %s -> https://www.youtube.com/watch?v=%s", video["id"], new_id)
         return 0
     log.error("every candidate failed to download")

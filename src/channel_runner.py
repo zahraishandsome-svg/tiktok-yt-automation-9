@@ -1194,7 +1194,7 @@ def _upload_video(channel: Dict[str, Any], video: Dict[str, Any],
             long_clip = False
         if long_clip:
             title_override, description_override = _longform_metadata(channel, video, local_file, dry_run)
-    return upload_video(
+    yt_id = upload_video(
         youtube_client=youtube,
         video_path=local_file,
         title=title_override or _resolve_title(channel, video),
@@ -1206,6 +1206,14 @@ def _upload_video(channel: Dict[str, Any], video: Dict[str, Any],
         publish_at=_get_publish_at(channel, slot),
         dry_run=dry_run,
     )
+    if yt_id and not dry_run:
+        # what this upload is made of, for reposts and later lookups (owner 2026-11-12)
+        from . import catalog
+        catalog.record(db._get_db_path(), yt_id, channel["id"], "short" if is_short else "longform",
+                       title_override or _resolve_title(channel, video),
+                       [{"id": video.get("id"), "caption": video.get("title"), "url": video.get("url"),
+                         "seconds": video.get("duration")}])
+    return yt_id
 
 
 def _get_publish_at(channel: Dict[str, Any], slot: int) -> Optional[str]:
