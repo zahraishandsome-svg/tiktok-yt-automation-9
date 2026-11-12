@@ -4,6 +4,8 @@
   python thumbnails.py --channel channel_3 --lang Japanese            # today's new long videos
   python thumbnails.py --channel channel_3 --lang Japanese --backfill 50   # latest N long videos
 
+Long video = 4:3 long-form / long repost OR longer than 180 s on YouTube (any upload path).
+
 For each long-form upload that has no AI thumbnail yet: download the original TikTok,
 src.ai_thumbnail makes the thumbnail (Claude plans + checks the main character's identity,
 Vertex Gemini draws, we add the text), then YouTube thumbnails.set. Done videos are kept in
@@ -55,6 +57,29 @@ def youtube(channel):
     return build("youtube", "v3", credentials=c, cache_discovery=False)
 
 
+def yt_lengths(ids):
+    """Seconds per YouTube id (public videos) via the Data API key; {} if no key."""
+    import re
+    import urllib.request
+    key = os.environ.get("YT_API_KEY")
+    out = {}
+    if not key:
+        print("thumbnails: no YT_API_KEY - only long-form labelled uploads are checked")
+        return out
+    ids = list(dict.fromkeys(ids))
+    for i in range(0, len(ids), 50):
+        try:
+            url = ("https://www.googleapis.com/youtube/v3/videos?part=contentDetails&id="
+                   + ",".join(ids[i:i + 50]) + "&key=" + key)
+            for it in json.load(urllib.request.urlopen(url, timeout=30))["items"]:
+                m = re.match(r"P(?:(\d+)D)?T?(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?", it["contentDetails"]["duration"])
+                d, h, mi, s = (int(x or 0) for x in m.groups())
+                out[it["id"]] = d * 86400 + h * 3600 + mi * 60 + s
+        except Exception as exc:  # noqa: BLE001
+            print(f"thumbnails: length lookup failed: {str(exc)[:150]}")
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--channel", required=True)
@@ -83,20 +108,33 @@ def main():
                 done.add(parts[0])
                 if len(parts) > 1 and parts[1]:
                     seed_hooks.append(parts[1])
-    # long-form uploads, plus reposts on channels that repost as long-form
-    formats = "('longform','repost')" if channel.get("repost_as_longform") else "('longform')"
-    q = ("SELECT youtube_video_id, tiktok_video_id, tiktok_url, tiktok_title FROM posted_videos "
-         f"WHERE channel_id=? AND format_type IN {formats} AND status='uploaded' "
+    # Which uploads are LONG videos on YouTube? Never trust the DB format label alone
+    # (owner 2026-11-12: 3 min+ clips uploaded through the Shorts path were missed).
+    # Long = 4:3 long-form / long repost, OR anything YouTube reports as longer than 180 s.
+    q = ("SELECT youtube_video_id, tiktok_video_id, tiktok_url, tiktok_title, format_type, posted_at "
+         "FROM posted_videos WHERE channel_id=? AND status='uploaded' "
          "AND youtube_video_id IS NOT NULL AND youtube_video_id NOT LIKE 'already%' ")
     if a.video:
-        rows = con.execute(q + "AND youtube_video_id=?", (a.channel, a.video)).fetchall()
+        cand = con.execute(q + "AND youtube_video_id=?", (a.channel, a.video)).fetchall()
         done.discard(a.video)
     elif a.backfill:
-        rows = con.execute(q + "ORDER BY posted_at DESC LIMIT ?", (a.channel, a.backfill)).fetchall()
+        cand = con.execute(q + "ORDER BY posted_at DESC", (a.channel,)).fetchall()
     else:
         # recent uploads (3 days) without a thumbnail, so a miss is caught next run
         since = (date.today() - timedelta(days=3)).isoformat()
-        rows = con.execute(q + "AND posted_at >= ? ORDER BY posted_at", (a.channel, since)).fetchall()
+        cand = con.execute(q + "AND posted_at >= ? ORDER BY posted_at", (a.channel, since)).fetchall()
+    long_formats = {"longform"} | ({"repost"} if channel.get("repost_as_longform") else set())
+    lengths = yt_lengths([r["youtube_video_id"] for r in cand if r["format_type"] not in long_formats])
+    rows, seen = [], set()
+    for r in cand:
+        vid = r["youtube_video_id"]
+        if vid in seen:
+            continue
+        if r["format_type"] in long_formats or lengths.get(vid, 0) > 180 or a.video:
+            rows.append(r)
+            seen.add(vid)
+    if a.backfill:
+        rows = rows[:a.backfill]
     todo = [r for r in rows if r["youtube_video_id"] not in done]
     print(f"thumbnails: {len(rows)} long video(s) in scope, {len(todo)} without an AI thumbnail")
     if not todo:

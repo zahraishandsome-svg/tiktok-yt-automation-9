@@ -1185,6 +1185,15 @@ def _upload_video(channel: Dict[str, Any], video: Dict[str, Any],
         credentials_file=channel["google_credentials_file"],
         token_file=channel["oauth_token_file"],
     )
+    if is_short and not title_override and channel.get("ai_longform_metadata") and not dry_run:
+        # A clip over 3 min becomes a normal LONG video on YouTube even through the Shorts
+        # path -> it gets the AI title + description like every long upload (owner 2026-11-12).
+        try:
+            long_clip = (get_video_duration(local_file) or 0) > 180
+        except Exception:  # noqa: BLE001
+            long_clip = False
+        if long_clip:
+            title_override, description_override = _longform_metadata(channel, video, local_file, dry_run)
     return upload_video(
         youtube_client=youtube,
         video_path=local_file,
