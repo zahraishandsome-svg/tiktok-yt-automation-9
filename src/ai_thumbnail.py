@@ -4,9 +4,11 @@
 2. Claude (Opus 5.5) watches the frames + caption, picks the main character's clearest
    face frames and the strongest moment, writes a short hook in the audience's language
    and an image brief.
-3. Gemini image model on Vertex AI composes a 16:9 scene from the real frames (character
-   kept identical), with NO text.
-4. We draw the hook ourselves with Noto Sans JP Black, so every character is exact.
+3. Gemini image model on Vertex AI makes the WHOLE 16:9 thumbnail from the real frames,
+   including the hook text (owner 2026-11-12: no manual/code editing of thumbnails at all,
+   and nothing in the picture that is not in the video).
+4. Claude reviews every image: same person, exact text, nothing invented; a failing image
+   is fixed by the image model (AI edit) or made again - never by code.
 
 Used by thumbnails.py (daily + backfill). Standalone: python -m src.ai_thumbnail <video.mp4> <caption> <lang> <out.jpg>
 Env:   ANTHROPIC_API_KEY, VERTEX_API_KEY, VERTEX_PROJECT
@@ -23,10 +25,9 @@ import urllib.request
 from pathlib import Path
 
 import anthropic
-from PIL import Image, ImageChops, ImageDraw, ImageEnhance, ImageFilter, ImageFont, ImageStat
+from PIL import Image, ImageChops, ImageStat
 
 HERE = Path(__file__).parent
-FONT = Path(os.environ.get("THUMB_FONT", HERE.parent / "fonts" / "NotoSansJP.ttf"))
 N_FRAMES = 12
 
 SCHEMA = {
@@ -79,26 +80,29 @@ Only the expression, pose, light and background may be chosen for the thumbnail.
   clearly visible and big, shallow depth of field. If the person's face never appears in
   the frames (a hands-only video), do not invent a face: the hands and the key object are
   the hero.
+  FIDELITY RULE (owner 2026-11-12, mandatory): only people, objects, food, props and places
+  that appear in the frames or the caption. Choose the framing, angle, moment and light,
+  but never add props, decorations, furniture, food, packaging, rooms or people that are
+  not in the video. Keep the real place (e.g. the real white marble kitchen) - do not swap
+  it for a different room.
   COLOUR RULE (owner 2026-11-12, a white, washed-out thumbnail was rejected as "too white
-  and basic"): the image must be RICH and WARM - deep, saturated colours, mid-tones,
-  cinematic warm light (lamp light, golden evening light) with real depth and contrast.
-  The background is the same kind of place as the real video but colourful and darker
-  than the subject: coloured walls, wood, fabrics, shelves or props that suit the topic,
-  softly blurred. Spell out in the brief: NEVER a white, off-white, light-grey or pastel
-  background, never a plain empty wall, never overexposed, no blown-out highlights, no
-  white table or white floor filling the frame. If the real room is white or plain,
-  re-dress and re-light it warmly instead of copying the white.
-  The OTHER side (where we add the text later) is a softer, darker part of the SAME
-  colourful scene - never an empty panel, blank block, flat colour area, border or split
-  screen. It must be ONE continuous photograph from one camera, edge to edge, with no
-  seam, no second picture and no collage.
-  Say clearly: no text, no letters, no logos, no watermark.
-- text_side: which side ("left"/"right") stays free for the text.
+  and basic"): the image must be RICH and WARM - deep, saturated, true colours, mid-tones,
+  warm light with depth and contrast. Get the colour from the REAL scene: frame tight on
+  the colourful real items (food, goods, packaging, clothes) so they fill the frame and
+  plain white walls, floors or tables take very little space; no blown-out highlights.
+  ONE continuous photograph from one camera, edge to edge: no seam, no second picture, no
+  blurred side panel, no collage, no split screen.
+  The headline text is rendered by the image model on the text_side half (we add the exact
+  words to the prompt ourselves): keep that half's content secondary (other real items of
+  the scene) so the text can sit on it; the hero stays fully on the other half.
+  Do not write the headline words into image_brief. Say clearly: no logos, no watermark,
+  no other text, captions, stickers or emoji.
+- text_side: which side ("left"/"right") carries the text.
 - accent_color: one bold, saturated hex colour for the text outline that suits the image
   (never white, pastel or light pink)."""
 
 # Tone gate (owner 2026-11-12: AYA's first thumbnail was "too white aur basic"). Measured
-# on the base image before the text goes on. Rejected: AYA kitty bag (luminance 184,
+# on the finished image (text included). Rejected: AYA kitty bag (luminance 184,
 # saturation 51, 52% white, blank pale panel); kept ch8 thumbnails sit at luminance 97-141,
 # saturation 89-132, white 6-11%.
 LUM_MIN, LUM_MAX, SAT_MIN, WHITE_MAX, BLANK_MAX = 55, 150, 70, 0.15, 0.30
@@ -112,20 +116,21 @@ LUM_MIN, LUM_MAX, SAT_MIN, WHITE_MAX, BLANK_MAX = 55, 150, 70, 0.15, 0.30
 # black outline plus a small identity label (「3児のシングルマザー」「4児シンママ」), numbers.
 STYLES = {
     "jp_vlog": {
-        "limits": {"SAT_MIN": 50, "LUM_MAX": 155, "WHITE_MAX": 0.10},
+        "limits": {"SAT_MIN": 50, "LUM_MAX": 155, "WHITE_MAX": 0.18},   # incl. the white headline
         "notes": """
 NICHE STYLE - Japanese mum / housewife daily-life vlog (owner 2026-11-12). Copy what the top
 videos of this niche do, not a cinematic look (these rules override the general light and
 colour wording above where they differ; still never white/pastel empty areas or blank panels):
-- image_brief: a REAL-LOOKING bright, colourful photo taken in a real Japanese home (kitchen,
-  living room, table), true-to-life colours, natural daylight plus warm room light. Not a
+- image_brief: a REAL-LOOKING bright, colourful photo taken in the creator's real home as
+  the frames show it, true-to-life colours, natural daylight plus warm room light. Not a
   movie still, not a studio render, not a dark moody room.
 - ABUNDANCE is the hook: the video's stuff fills at least two thirds of the frame, big and
   close - the whole haul spread out, the packed fridge/pantry, the full dinner spread, the
   finished result (e.g. the bag completely covered in goods, the hamburg cut open with the
-  egg yolk showing). Colourful packaging and food, no empty table, floor or wall.
-- ONE continuous photo edge to edge (one camera, one moment). The text is printed over the
-  busy photo, so do NOT reserve a blurred or separate area for it: no second photo, no
+  egg yolk showing) - only the real items from the video, nothing added. Colourful
+  packaging and food, no empty table, floor or wall.
+- ONE continuous photo edge to edge (one camera, one moment). The text sits over the busy
+  photo, so do NOT reserve a blurred or separate area for it: no second photo, no
   blurred side panel, no collage, no split screen, no seam.
 - The hero/result the hook talks about (e.g. the cut-open egg hamburg, the decorated bag)
   sits fully inside the half OPPOSITE text_side, big and sharp; the text side shows
@@ -199,13 +204,51 @@ def plan(fr, caption: str, lang: str, avoid=None, style=None) -> dict:
     u = resp.usage
     cost = u.input_tokens * 4e-6 + u.output_tokens * 20e-6
     print(f"claude: {u.input_tokens} in / {u.output_tokens} out tokens ~ ${cost:.3f}")
-    return json.loads(text)
+    p = json.loads(text)
+    p["_lang"], p["_style"] = lang, style
+    return p
 
 
-def image(p: dict, fr, feedback: str = "") -> Image.Image:
+def text_spec(p: dict) -> str:
+    """The exact headline the image model must paint (owner: no code-drawn text)."""
+    lines = [ln.strip() for ln in (p.get("hook_lines") or [p["hook_text"]]) if ln.strip()]
+    side, accent = p.get("text_side", "left"), p.get("accent_color", "#E0102F")
+    jp = str(p.get("_lang", "")).lower().startswith("jap")
+    font = ("an extra-heavy, very bold Japanese gothic sans-serif (like Noto Sans JP Black)" if jp
+            else "an extra-heavy condensed bold sans-serif (like Impact)")
+    quoted = ", ".join(f'line {i + 1}: "{ln}"' for i, ln in enumerate(lines))
+    if p.get("_style") == "jp_vlog":
+        hl = p.get("highlight_line", -1)
+        colours = "; ".join(f'line {i + 1} {"bright yellow" if i == hl else "white"}' for i in range(len(lines)))
+        label = (p.get("label_text") or "").strip()
+        lab = (f'At the top of the text block a small label in a rounded {accent} box with a thin black border, white bold letters: '
+               f'"{label}". ' if label else "")
+        look = (f"{lab}Below it the headline, {len(lines)} stacked line(s): {quoted}. Huge letters in {font}, with a "
+                f"THICK black outline and a soft drop shadow ({colours}).")
+    else:
+        look = (f"{len(lines)} stacked line(s): {quoted}. Huge white letters in {font}, with a THICK {accent} "
+                f"outline, a thin black outer edge and a soft drop shadow.")
+    return ("THUMBNAIL TEXT - paint it into the image yourself, EXACTLY these characters, nothing more, nothing "
+            f"less, every character complete and correct: {look} Place the text block on the {side} half, "
+            "vertically centred, as large as fits that half (it must read instantly on a phone), never over the "
+            "hero, and keep the bottom-right corner clear. Apart from this headline there is NO other text, "
+            "letters, numbers, logos, watermark, captions, stickers or emoji anywhere.")
+
+
+def image(p: dict, fr, feedback: str = "", edit: Image.Image = None) -> Image.Image:
+    """Make the thumbnail; with edit=<previous image> the model changes only what feedback asks."""
     refs = [fr[p["hero_frame"]][3]] + [fr[i][3] for i in p["face_frames"] if i != p["hero_frame"]][:2]
     parts = [{"inlineData": {"mimeType": "image/jpeg", "data": base64.b64encode(r.read_bytes()).decode()}}
              for r in refs]
+    if edit is not None:
+        buf = io.BytesIO()
+        edit.save(buf, "JPEG", quality=92)
+        parts.append({"inlineData": {"mimeType": "image/jpeg", "data": base64.b64encode(buf.getvalue()).decode()}})
+        parts.append({"text": "The LAST attached image is the current thumbnail; the others are real frames from "
+                              "the video. Edit the current thumbnail and change ONLY this: " + feedback + " Keep "
+                              "everything else exactly as it is (people, hands, objects, layout, colours). "
+                              + text_spec(p) + " 16:9."})
+        return _vertex(parts)
     parts.append({"text": "The attached images are real frames from the video; the main character "
                           "must look exactly like them. IDENTITY LOCK: keep the main character's "
                           "facial features identical to the reference frames - eye shape and size, "
@@ -213,8 +256,12 @@ def image(p: dict, fr, feedback: str = "") -> Image.Image:
                           "colour/length/style and clothes. Do not beautify, idealise, age, slim or "
                           "otherwise change the face; it must be recognisably the same real person. "
                           "The frames may show the creator's own on-screen captions, stickers or emoji: "
-                          "never copy them - the output has no text, letters or emoji at all. "
-                          + p["image_brief"] + (" " + feedback if feedback else "")})
+                          "never copy them. Show only things that are in the video. "
+                          + p["image_brief"] + " " + text_spec(p) + (" " + feedback if feedback else "")})
+    return _vertex(parts)
+
+
+def _vertex(parts) -> Image.Image:
     body = {"contents": [{"role": "user", "parts": parts}],
             "generationConfig": {"responseModalities": ["IMAGE"], "imageConfig": {"aspectRatio": "16:9"}}}
     url = (f"https://aiplatform.googleapis.com/v1/projects/{os.environ['VERTEX_PROJECT']}/locations/global"
@@ -252,29 +299,48 @@ def image(p: dict, fr, feedback: str = "") -> Image.Image:
 
 
 CHECK_SCHEMA = {"type": "object", "additionalProperties": False,
-                "required": ["same_person", "score", "differences"],
+                "required": ["same_person", "score", "differences", "text_read", "text_exact", "invented_items"],
                 "properties": {"same_person": {"type": "boolean"},
                                "score": {"type": "integer"},
-                               "differences": {"type": "string"}}}
+                               "differences": {"type": "string"},
+                               "text_read": {"type": "string"},
+                               "text_exact": {"type": "boolean"},
+                               "invented_items": {"type": "array", "items": {"type": "string"}}}}
 
 
-def same_person(candidate: Image.Image, face_refs) -> dict:
-    """Claude compares the generated thumbnail with the real face frames."""
-    buf = io.BytesIO(); candidate.save(buf, "JPEG", quality=88)
-    content = [{"type": "text", "text": "REAL frames from the video (the true main character):"}]
-    for r in face_refs:
+def review(candidate: Image.Image, p: dict, fr) -> dict:
+    """Claude checks one thumbnail against the whole video: same person, exact text, and
+    nothing in it that the video does not show (owner 2026-11-12)."""
+    buf = io.BytesIO()
+    candidate.save(buf, "JPEG", quality=88)
+    content = [{"type": "text", "text": "REAL frames from the video, f00..f11:"}]
+    for i, t, small, _ in fr:
         content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg",
-                                                    "data": base64.b64encode(r.read_bytes()).decode()}})
+                                                    "data": base64.b64encode(small.read_bytes()).decode()}})
+    lines = [ln for ln in (p.get("hook_lines") or [p["hook_text"]]) if ln.strip()]
+    expected = ((f'label "{p["label_text"]}" + ' if p.get("label_text") else "")
+                + " / ".join(f'"{ln}"' for ln in lines))
+    if p.get("face_frames"):
+        person = ("1) PERSON: is the main character clearly the SAME real person as in the frames ("
+                  + ", ".join(f"f{i:02d}" for i in p["face_frames"]) + ")? Judge face, age, hair, skin tone "
+                  "and clothes; ignore expression, pose, light. Small differences are fine. score 1-10, "
+                  "same_person if >= 6.")
+    else:
+        person = ("1) PERSON: the video never shows a face, so set same_person true and score 10, unless the "
+                  "thumbnail shows an invented face (then same_person false and say so in differences).")
     content += [{"type": "text", "text": "GENERATED thumbnail:"},
                 {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg",
                                              "data": base64.b64encode(buf.getvalue()).decode()}},
-                {"type": "text", "text": "Is the main character in the generated thumbnail clearly the SAME "
-                 "real person as in the real frames? Judge facial features (eyes, eyebrows, nose, mouth, "
-                 "face shape), age, hair, skin tone and clothes; ignore expression, pose, light and "
-                 "background. Small differences are fine (owner, 2026-11-12: minor mistakes are OK, it only "
-                 "has to clearly read as the same person). score 1-10 (10 = indistinguishable). same_person "
-                 "if score >= 6. "
-                 "differences: list what is off, or 'none'."}]
+                {"type": "text", "text": person
+                 + f"\n2) TEXT: the thumbnail must show exactly {expected} and no other text. text_read = every "
+                 "piece of text you can read in the thumbnail, exactly. text_exact = true only if the headline "
+                 "matches character for character (no missing, extra, wrong or garbled characters) and there is "
+                 "no other readable text, logo, caption or emoji (tiny unreadable packaging print is fine).\n"
+                 "3) FAKES: invented_items = things in the thumbnail that do NOT appear anywhere in the frames "
+                 "or the caption: objects, food, props, decorations, furniture, packaging, a different room or "
+                 "place, extra people. Ignore light, colour, angle, blur, crop and the headline itself. The same "
+                 "kind of item in a slightly different arrangement is fine. [] if none.\n"
+                 f"What happens in the video: {p.get('what_happens', '')}"}]
     resp = anthropic.Anthropic().messages.create(
         model="claude-opus-5-5", max_tokens=4000,
         output_config={"effort": "medium", "format": {"type": "json_schema", "schema": CHECK_SCHEMA}},
@@ -324,186 +390,66 @@ def tone(img: Image.Image, side: str = "left", style=None) -> dict:
             "blank": round(blank, 2), "seam": round(seam[0], 1), "why": "; ".join(why)}
 
 
-def grade(img: Image.Image, side: str = "left", style=None) -> Image.Image:
-    """Last resort when no attempt passed the tone gate: pull the highlights down and
-    lift the colour step by step until it passes (at most 4 steps)."""
-    lim = limits(style)
-    for _ in range(4):
-        t = tone(img, side, style)
-        if t["ok"]:
-            break
-        if t["lum"] > lim["LUM_MAX"] or t["white"] > lim["WHITE_MAX"] or t["blank"] > lim["BLANK_MAX"]:
-            img = img.point(lambda v: int(232 * (v / 255) ** 1.25))     # darker mids, whites pulled down
-            img = ImageEnhance.Contrast(img).enhance(1.08)
-        if t["sat"] < lim["SAT_MIN"] or t["lum"] > lim["LUM_MAX"]:
-            img = ImageEnhance.Color(img).enhance(1.25)
-    return img
-
-
-def build_base(p, fr, tries: int = 3, style=None):
-    """Always an AI image (owner rule). An attempt is kept only when the face matches the
-    video AND the colour passes the tone gate (no white / washed-out / half-empty images).
-    Otherwise retry with the reason as feedback; after the last try keep the best one and
-    grade it if its colour still fails."""
-    face_refs = [fr[i][3] for i in p["face_frames"]][:3] or [fr[p["hero_frame"]][3]]
+def build_base(p, fr, tries: int = 4, style=None):
+    """The finished thumbnail, made 100% by the image model (owner 2026-11-12: no code
+    drawing, no colour grading). Kept only when Claude's review passes (same person, exact
+    text, nothing invented) and the tone gate passes (not white / washed out / split).
+    A failing image is fixed by an AI edit when only the text or invented items are wrong,
+    otherwise made again with the reasons; after the last try the best one is kept."""
+    style = style or p.get("_style")
     side = p.get("text_side", "left")
-    feedback, best = "", None
+    feedback, best, prev, edit_next = "", None, None, False
     for n in range(1, tries + 1):
         try:
-            cand = image(p, fr, feedback)
+            cand = image(p, fr, feedback, edit=prev if edit_next else None)
         except RuntimeError as exc:          # empty answer from the image model
             print(f"image attempt {n}: {exc}")
-            if n == tries and best is None:
-                cand = image(p, fr, "Keep it wholesome and family-friendly.")   # last try
-            else:
-                feedback = "Keep it wholesome and family-friendly."
-                continue
+            feedback, edit_next = "Keep it wholesome and family-friendly.", False
+            continue
         t = tone(cand, side, style)
-        if p.get("face_frames"):
-            verdict = same_person(cand, face_refs)
-        else:   # hands-only / faceless video: no face to protect, the check only adds noise
-            verdict = {"same_person": True, "score": 10, "differences": "no face in the video - not checked"}
-        print(f"identity check {n}: score {verdict['score']}/10 same={verdict['same_person']} - {verdict['differences']}")
+        v = review(cand, p, fr)
+        print(f"review {n}: person {v['score']}/10 same={v['same_person']} | text_exact={v['text_exact']} "
+              f"read='{v['text_read']}' | invented={v['invented_items']}")
         print(f"tone check {n}: {'ok' if t['ok'] else t['why']} (lum {t['lum']}, sat {t['sat']}, "
               f"white {t['white']:.0%}, blank {t['blank']:.0%})")
-        rank = (verdict["same_person"], t["ok"], verdict["score"])
+        rank = (v["same_person"], v["text_exact"], not v["invented_items"], t["ok"], v["score"])
         if best is None or rank > best[1]:
-            best = (cand, rank, t)
-        if verdict["same_person"] and t["ok"]:
-            return cand, f"ai (check {verdict['score']}/10, tone ok)"
+            best = (cand, rank)
+        if all(rank[:4]):
+            return cand, f"ai (check {v['score']}/10, text ok, no fakes, tone ok, try {n})"
         fixes = []
-        if not verdict["same_person"]:
-            fixes.append("Previous attempt changed the person: " + verdict["differences"]
-                         + ". Copy the face from the reference frames exactly.")
-        if not t["ok"] and style == "jp_vlog":
-            fixes.append("Previous attempt was rejected as too white and plain: " + t["why"] + ". "
-                         "Fill the frame with the video's colourful items (packaging, food, goods) big and "
-                         "close; true-to-life colour, no white or pastel walls, floors or tables in view, no "
-                         "blown-out highlights, no empty area.")
-        elif not t["ok"]:
-            fixes.append("Previous attempt was rejected as too white and plain: " + t["why"] + ". "
-                         "Make it rich and warm: deep saturated colours, warm cinematic light, a colourful "
-                         "darker background of the same kind of place, no white or pastel walls, floors or "
-                         "tables, no blown-out highlights, no empty area - the scene fills the whole frame.")
+        if not v["text_exact"]:
+            fixes.append(f"The text is wrong (it reads '{v['text_read']}'); paint the headline exactly as "
+                         "specified and remove any other text.")
+        if v["invented_items"]:
+            fixes.append("Remove these things that are not in the video: " + "; ".join(v["invented_items"])
+                         + " - show only the real items from the video frames.")
+        if not v["same_person"]:
+            fixes.append("The person changed: " + v["differences"] + ". Copy the person from the reference "
+                         "frames exactly.")
+        if not t["ok"]:
+            fixes.append("The picture is too white / plain: " + t["why"] + ". Fill the frame with the video's "
+                         "colourful real items, big and close; rich true colour, warm light, no white or pastel "
+                         "areas, one continuous photo.")
         feedback = " ".join(fixes)
-    img, (same, tone_ok, score), t = best
-    how = f"ai, best of {tries} (score {score}/10)"
-    if not tone_ok:
-        img = grade(img, side, style)
-        g = tone(img, side, style)
-        print(f"tone graded: {'ok' if g['ok'] else g['why']} (lum {g['lum']}, sat {g['sat']}, white {g['white']:.0%})")
-        how += ", colour graded"
-    return img, how
-
-def _font(size):
-    f = ImageFont.truetype(str(FONT), size)
-    try:
-        f.set_variation_by_axes([900])  # Black weight
-    except Exception:
-        pass
-    return f
+        # small, local problems -> AI edit of this image; person/colour problems -> make it again
+        edit_next = v["same_person"] and t["ok"]
+        prev = cand
+    if best is None:
+        raise RuntimeError("the image model returned no image")
+    img, rank = best
+    return img, (f"ai, best of {tries} (person {rank[4]}/10, text {'ok' if rank[1] else 'NOT exact'}, "
+                 f"{'no fakes' if rank[2] else 'has invented items'}, tone {'ok' if rank[3] else 'off'})")
 
 
-def add_text(img: Image.Image, lines: list, side: str, accent: str) -> Image.Image:
-    """Each line gets its own size: as large as fits the free half (short lines grow
-    bigger), then the block is scaled down together if it is too tall."""
-    W, H = img.size
-    draw = ImageDraw.Draw(img)
-    lines = [ln for ln in lines if ln.strip()][:3]
-    box_w, max_h = int(W * 0.47), int(H * 0.84)
-
-    def fit(ln):
-        size = 300
-        while size > 50:
-            f = _font(size)
-            if draw.textbbox((0, 0), ln, font=f, stroke_width=size // 9 + size // 24)[2] <= box_w:
-                return size
-            size -= 6
-        return size
-
-    sizes = [fit(ln) for ln in lines]
-    # one size for every line (the largest that fits the widest line) reads as one bold
-    # block; short stacked lines are what make that size big
-    sizes = [min(sizes)] * len(sizes)
-    total = sum(int(s * 1.12) for s in sizes)
-    if total > max_h:
-        sizes = [int(s * max_h / total) for s in sizes]
-        total = sum(int(s * 1.12) for s in sizes)
-    x0 = int(W * 0.03) if side == "left" else W - box_w - int(W * 0.03)
-    y = (H - total) // 2
-    for ln, size in zip(lines, sizes):
-        f = _font(size)
-        sw = max(6, size // 9)
-        w = draw.textbbox((0, 0), ln, font=f, stroke_width=sw)[2]
-        x = x0 + (box_w - w) // 2
-        shadow = Image.new("RGBA", img.size, (0, 0, 0, 0))
-        ImageDraw.Draw(shadow).text((x + 8, y + 10), ln, font=f, fill=(0, 0, 0, 170),
-                                    stroke_width=sw, stroke_fill=(0, 0, 0, 170))
-        blur = shadow.filter(ImageFilter.GaussianBlur(6))
-        img.paste(blur, (0, 0), blur)
-        draw = ImageDraw.Draw(img)
-        # thin dark edge outside the colour outline, so the text pops on any background
-        draw.text((x, y), ln, font=f, fill="#111111", stroke_width=sw + max(4, size // 24), stroke_fill="#111111")
-        draw.text((x, y), ln, font=f, fill="white", stroke_width=sw, stroke_fill=accent)
-        y += int(size * 1.12)
+def add_text(img: Image.Image, *_args, **_kw) -> Image.Image:
+    """Kept for old callers: the text is now painted by the image model inside build_base
+    (owner 2026-11-12: no manual/code editing of thumbnails), so nothing is drawn here."""
     return img
 
 
-def add_text_vlog(img: Image.Image, p: dict) -> Image.Image:
-    """jp_vlog niche text: a small label in a coloured box, then 1-2 huge heavy lines in
-    white / yellow with a thick black outline (the look of the niche's top videos)."""
-    W, H = img.size
-    draw = ImageDraw.Draw(img)
-    lines = [ln for ln in (p.get("hook_lines") or [p["hook_text"]]) if ln.strip()][:2]
-    label, side, accent = (p.get("label_text") or "").strip(), p["text_side"], p["accent_color"]
-    hl = p.get("highlight_line", -1)
-    box_w = int(W * 0.50)
-    x0 = int(W * 0.03) if side == "left" else W - box_w - int(W * 0.03)
-
-    def fit(ln, start, frac=1.0):
-        size = start
-        while size > 40:
-            if draw.textbbox((0, 0), ln, font=_font(size), stroke_width=size // 7)[2] <= box_w * frac:
-                return size
-            size -= 4
-        return size
-
-    size = min(fit(ln, 260) for ln in lines)
-    lsize = fit(label, 64, 0.9) if label else 0
-    lab_h = int(lsize * 1.55) if label else 0
-    total = lab_h + int(size * 1.08) * len(lines)
-    if total > H * 0.86:
-        k = H * 0.86 / total
-        size, lsize, lab_h = int(size * k), int(lsize * k), int(lab_h * k)
-        total = lab_h + int(size * 1.08) * len(lines)
-    y = (H - total) // 2
-    if label:
-        f = _font(lsize)
-        tw = draw.textbbox((0, 0), label, font=f)[2]
-        bw, bh = tw + lsize, int(lsize * 1.35)
-        bx = x0 + (box_w - bw) // 2
-        draw.rounded_rectangle((bx, y, bx + bw, y + bh), radius=bh // 4, fill=accent, outline="#111111", width=max(3, lsize // 14))
-        draw.text((bx + lsize // 2, y + (bh - lsize) // 2 - lsize // 8), label, font=f, fill="white",
-                  stroke_width=max(2, lsize // 16), stroke_fill="#111111")
-        y += lab_h
-    for i, ln in enumerate(lines):
-        f, sw = _font(size), max(8, size // 7)
-        w = draw.textbbox((0, 0), ln, font=f, stroke_width=sw)[2]
-        x = x0 + (box_w - w) // 2
-        shadow = Image.new("RGBA", img.size, (0, 0, 0, 0))
-        ImageDraw.Draw(shadow).text((x + 7, y + 9), ln, font=f, fill=(0, 0, 0, 160), stroke_width=sw, stroke_fill=(0, 0, 0, 160))
-        blur = shadow.filter(ImageFilter.GaussianBlur(6))
-        img.paste(blur, (0, 0), blur)
-        draw = ImageDraw.Draw(img)
-        draw.text((x, y), ln, font=f, fill="#FFE100" if i == hl else "white", stroke_width=sw, stroke_fill="#111111")
-        y += int(size * 1.08)
-    return img
-
-
-def compose(base: Image.Image, p: dict, style=None) -> Image.Image:
-    if style == "jp_vlog":
-        return add_text_vlog(base.copy(), p)
-    return add_text(base.copy(), p.get("hook_lines") or [p["hook_text"]], p["text_side"], p["accent_color"])
+def compose(base: Image.Image, p: dict = None, style=None) -> Image.Image:
+    return base
 
 
 if __name__ == "__main__":
@@ -514,8 +460,7 @@ if __name__ == "__main__":
     p = plan(fr, caption, lang, style=style)
     print(json.dumps(p, ensure_ascii=False, indent=1))
     base, how = build_base(p, fr, style=style)
-    print("base image:", how)
-    base.save(out.with_name(out.stem + "_base.jpg"), quality=92)
+    print("thumbnail:", how)
     out.with_name(out.stem + "_plan.json").write_text(json.dumps(p, ensure_ascii=False, indent=1), encoding="utf-8")
-    compose(base, p, style).save(out, quality=90)
+    base.save(out, quality=92)
     print("saved", out, out.stat().st_size, "bytes")
